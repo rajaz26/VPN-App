@@ -25,21 +25,19 @@ const HomeScreen = () => {
   const [country, setCountry] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
   const navigation = useNavigation();
-  const [loading, setLoading]=useState(false);
   const [loadingServer, setLoadingServer]=useState(true);
   const [showAnimation, setShowAnimation] = useState(false);
   const [log, setLog] = useState('');
-  const logScrollView = useRef(null);
-  const [vpnState, setVpnState] = useState(null);
   const dispatch = useDispatch();
   const vpnStatus = useSelector((state) => state.vpn);
   const [ipAddress,setIpAddress]=useState(null);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
+ 
   useEffect(() => {
     async function observeVpn() {
       addVpnStateListener((e) => {
-        updateLog(JSON.stringify(e, undefined, 2));
+        updateLog(e);  
       });
     }
 
@@ -50,12 +48,27 @@ const HomeScreen = () => {
     };
   }, []);
 
-
 useEffect(() => {
   if (isConnected) {
       getPublicIP();
   }
 }, [isConnected]);
+
+useEffect(() => {
+  let interval = null;
+  if (isConnected) {
+    interval = setInterval(() => {
+      setTimer(oldTimer => oldTimer + 1);
+    }, 1000);
+  } else if (!isConnected && timer !== 0) {
+    clearInterval(interval);
+  }
+  return () => clearInterval(interval);
+}, [isConnected, timer]);
+
+useEffect(()=>{
+  loginUser();
+},[])
 
 const getPublicIP = async () => {
   try {
@@ -66,7 +79,6 @@ const getPublicIP = async () => {
       console.error("Failed to fetch IP address: ", error);
   }
 };
-
 
 const toggleServerConnection = async (serverId) => {
   const server = servers.find(s => s.id === serverId);
@@ -79,59 +91,51 @@ const toggleServerConnection = async (serverId) => {
       setIsConnecting(true);
       setIsConnected(false);
       setSelectedConnection(serverId);
-
       try {
           await startOvpn(serverId, server.fileName);
           setIsConnected(true);
       } catch (error) {
           console.error('VPN connection error:', error);
       }
-
       setIsConnecting(false);
+
   } else {
       setIsConnecting(false);
       setIsDisconnecting(true);
       try {
           await stopOvpn();
           setIsConnected(false);
-          setIsDisconnecting(false); 
+          
       } catch (error) {
           console.error('VPN disconnection error:', error);
-          setIsDisconnecting(false); // Reset disconnection flag if error occurs
+          
       }
       setSelectedConnection(null);
       // setTimer(0);
       setIpAddress(null);
       setCountry(null);
+      setIsDisconnecting(false);
   }
 };
-
 
 const toggleConnect = async () => {
   setIsConnecting(true);
   if (!isConnected) {
-      
-      setTimeout(async () => {
-          try {
-              await connectToRandomServer();
-              setIsConnected(true);
-              setTimer(0);
-              
-          } catch (error) {
-              console.error('Connection failed:', error);
-              setIsConnected(false);
-          }
+      try {
+          await connectToRandomServer();
+          setIsConnected(true);
           setIsConnecting(false);
-      }, 5000);
+      } catch (error) {
+          console.error('Connection failed:', error);
+          setIsConnected(false);
+          setIsConnecting(false);
+      }
+      
   } else {
-      setIsConnecting(false);
       setIsDisconnecting(true);
+      setIsConnecting(false);
       await stopOvpn();
-      setIsConnected(false);
-      setSelectedConnection(null);
-      // setTimer(0);
-      setIpAddress(null);
-      setCountry(null);
+      setIsConnected(false); 
       setIsDisconnecting(false);
   }
 };
@@ -170,12 +174,10 @@ const startOvpn = async (serverId, fileName) => {
   }
 };
 
-
-
-
   const stopOvpn = async () => {
     try {
       await RNSimpleOpenvpn.disconnect();
+      setSelectedConnection(null);
     } catch (error) {
       updateLog(error);
     }
@@ -185,18 +187,6 @@ const startOvpn = async (serverId, fileName) => {
     const now = new Date().toLocaleTimeString();
     setLog((prevLog) => `${prevLog}\n[${now}] ${newLog}`);
   };
-
-  useEffect(() => {
-    let interval = null;
-    if (isConnected) {
-      interval = setInterval(() => {
-        setTimer(oldTimer => oldTimer + 1);
-      }, 1000);
-    } else if (!isConnected && timer !== 0) {
-      clearInterval(interval);
-    }
-    return () => clearInterval(interval);
-  }, [isConnected, timer]);
 
   const loginUser = async () => {
     try {
@@ -218,8 +208,7 @@ const startOvpn = async (serverId, fileName) => {
     
   }
 
-
-  useEffect(() => {
+useEffect(() => {
     if (isConnecting && !isConnected) {
       setShowAnimation(true);
     } else if (!isConnecting && !isConnected) {
@@ -227,8 +216,7 @@ const startOvpn = async (serverId, fileName) => {
     }
   }, [isConnecting, isConnected]);
   
-
-  const getConnectionStatusText = (id) => {
+const getConnectionStatusText = (id) => {
     if (selectedConnection === id) {
         if (isConnecting) {
             return 'Connecting...';
@@ -245,18 +233,10 @@ const startOvpn = async (serverId, fileName) => {
     }
 };
 
-  const getConnectionColor = (id) => {
+const getConnectionColor = (id) => {
     return selectedConnection === id ? 'green' : 'red';
   };
 
-
-
-
-  
-  useEffect(()=>{
-    loginUser();
-  },[])
-  
   const formatTime = (timer) => {
     const getSeconds = `0${(timer % 60)}`.slice(-2);
     const minutes = `${Math.floor(timer / 60)}`;
@@ -277,8 +257,6 @@ const startOvpn = async (serverId, fileName) => {
     }
   };
   
-
-
   const fetchImageDataAsBase64 = async (url, token) => {
     try {
       const response = await axios.get(url, {
@@ -292,7 +270,6 @@ const startOvpn = async (serverId, fileName) => {
       return '';
     }
   };
-  
   
   const fetchServers = async (token) => {
     setLoadingServer(true);
@@ -334,19 +311,6 @@ const connectToRandomServer = async () => {
   console.log("Automatically connecting to server:", server.serverName);
   await toggleServerConnection(server.id);
 };
-
-
-
-
-  
-  useEffect(() => {
-    loginUser();
-  }, []);
-  
-
-  
-
-  
 
   return (
     <SafeAreaView style={styles.background}>
