@@ -1,13 +1,11 @@
-// store/index.js
-import { configureStore, getDefaultMiddleware } from '@reduxjs/toolkit';
-import logger from 'redux-logger'; // Import the logger middleware
-import useReducer from './useReducer';
+import { configureStore } from '@reduxjs/toolkit';
+import logger from 'redux-logger';
+import vpnReducer from './vpnSlice';
 
 export const store = configureStore({
   reducer: {
-    user: useReducer, // Use the correct reducer import
+ 
+    vpn: vpnReducer,  
   },
-  middleware: (getDefaultMiddleware) => [...getDefaultMiddleware(), logger], // Include logger middleware
+  middleware: (getDefaultMiddleware) => [...getDefaultMiddleware(), logger],
 });
-
-export default store;

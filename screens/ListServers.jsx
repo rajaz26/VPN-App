@@ -7,48 +7,116 @@ import { RadioButton } from 'react-native-paper';
 import axios from 'axios';
 import { LOGIN } from '../assets/credentials';
 import { encode } from 'base64-arraybuffer';
+import SkeletonPlaceholder from "react-native-skeleton-placeholder";
+import RNSimpleOpenvpn, { addVpnStateListener, removeVpnStateListener } from 'react-native-simple-openvpn';
+
 
 const ListServers = () => {
   const [selectedServerId, setSelectedServerId] = useState(null);
   const [accessToken, setAccessToken] = useState(null);
   const [servers, setServers] = useState([]);
   const navigation = useNavigation();
-  
-  const toggleServerConnection = (serverId) => {
-    setSelectedServerId(selectedServerId === serverId ? null : serverId);
-  };
+  const [loadingServer, setLoadingServer]=useState(true);
+  const [selectedConnection, setSelectedConnection] = useState(null);
+  const [loading, setLoading]=useState(false);
+  const [isConnected, setIsConnected] = useState(false);
+  const toggleServerConnection = async (serverId) => {
+    const server = servers.find(s => s.id === serverId);
+    if (!server) {
+        console.error('Server not found');
+        return;
+    }
 
-  const getConnectionColor = (serverId) => {
-    return selectedServerId === serverId ? 'green' : 'red';
-  };
+    console.log("Connecting to server with file name:", server.fileName); 
+
+    if (selectedConnection !== serverId) {
+        setLoading(true);
+        setIsConnected(false);
+        setSelectedConnection(serverId);
+
+        try {
+            await startOvpn(serverId,server.fileName);
+            
+            setIsConnected(true);
+        } catch (error) {
+            console.error('VPN connection error:', error);
+        }
+
+        setLoading(false);
+    } else {
+        try {
+            await stopOvpn();
+            setIsConnected(false);
+        } catch (error) {
+            console.error('VPN disconnection error:', error);
+        }
+        setSelectedConnection(null);
+    }
+};
+
+const stopOvpn = async () => {
+  try {
+    await RNSimpleOpenvpn.disconnect();
+  } catch (error) {
+    updateLog(error);
+  }
+};
+
+
+const getConnectionStatusText = (id) => {
+  if (selectedConnection === id) {
+      if (loading) {
+          return 'Connecting...';
+      } else if (isConnected) {
+          return 'Connected'; 
+      } else {
+          return 'Connect';
+      }
+  } else {
+      return 'Connect'; 
+  }
+};
+
+
+const startOvpn = async (serverId, fileName) => {
+  const server = servers.find(s => s.id === serverId);
+  if (!server) {
+    console.error('Server not found');
+    return;
+  }
+
+  const fileUrl = `http://104.238.35.17:8090/api/ServersDetails/DownloadFile/${fileName}`;
+
+  try {
+    const response = await axios.get(fileUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+
+    // console.log("OVPN File Content:", response.data); 
+
+   const file=response.data;
+
+    const fileContentStr = file.toString('utf8');
   
-  // const servers = [
-  //   {
-  //     id:1,
-  //     name: 'Germany',
-  //     flagUri: require('./germany.jpg'),
-  //   },
-  //   {
-  //     id:2,
-  //     name: 'Austria',
-  //     flagUri: require('./austria.png'),
-  //   },
-  //   {
-  //     id:3,
-  //     name: 'France',
-  //     flagUri: require('./france.jpg'),
-  //   },
-  //   {
-  //     id:4,
-  //     name: 'United Kingdom',
-  //     flagUri: require('./uk.jpg'),
-  //   },
-  //   {
-  //     id:5,
-  //     name: 'Australia',
-  //     flagUri: require('./australia.jpg'),
-  //   },
-  // ];
+    await RNSimpleOpenvpn.connect({
+      remoteAddress: server.serverIP,
+      ovpnString:fileContentStr, 
+      notificationTitle: 'RNSimpleOpenVPN',
+      compatMode: RNSimpleOpenvpn.CompatMode.OVPN_TWO_THREE_PEER,
+      providerBundleIdentifier: 'com.your.network.extension.bundle.id',
+      localizedDescription: 'TestRNSimpleOvpn',
+    });
+    console.log("Connection established with server:", server.serverName);
+  } catch (error) {
+    updateLog(error.toString());
+    console.error("Error connecting with OVPN or fetching file:", error);
+  }
+};
+
+const getConnectionColor = (id) => {
+  return selectedConnection === id ? 'green' : 'red';
+};
 
   const loginUser = async () => {
     try {
@@ -58,7 +126,7 @@ const ListServers = () => {
       });
   
       if (response.status === 200) {
-        console.log("Login successful", response.data);
+        // console.log("Login successful", response.data);
         setAccessToken(response.data.accessToken);
         await fetchServers(response.data.accessToken);
       } else {
@@ -85,28 +153,32 @@ const ListServers = () => {
   };
   
   const fetchServers = async (token) => {
+    setLoadingServer(true);
     if (!token) {
-      console.log("Access token is not available.");
-      return;
+        console.log("Access token is not available.");
+        return;
     }
+    
     try {
-      const response = await axios.get('http://104.238.35.17:8090/api/ServersDetails', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (response.status === 200) {
-        const serversWithImages = await Promise.all(response.data.map(async server => {
-          const imageUrl = `http://104.238.35.17:8090${server.countryFlagLink}`;
-          const imageBase64 = await fetchImageDataAsBase64(imageUrl, token);
-          return { ...server, imageBase64 };
-        }));
-        setServers(serversWithImages);
-      } else {
-        console.error("Failed to fetch server details", response.data);
-      }
+        const response = await axios.get('http://104.238.35.17:8090/api/ServersDetails', {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        if (response.status === 200) {
+            const serversWithImagesAndFiles = await Promise.all(response.data.map(async server => {
+                const imageUrl = `http://104.238.35.17:8090${server.countryFlagLink}`;
+                const imageBase64 = await fetchImageDataAsBase64(imageUrl, token);
+                const fileName = server.ovpnFileLink.split('/').pop();
+                return { ...server, imageBase64, fileName };
+            }));
+            setServers(serversWithImagesAndFiles);
+            setLoadingServer(false);
+        } else {
+            console.error("Failed to fetch server details", response.data);
+        }
     } catch (error) {
-      console.error("Error fetching server details:", error);
+        console.error("Error fetching server details:", error);
     }
-  }
+};
   
 
   
@@ -125,34 +197,34 @@ const ListServers = () => {
       </SafeAreaView>
       <View style={styles.listContainer}>
         <ScrollView>
+          
           {servers.map((server,index) => (
-            <TouchableOpacity key={index} style={styles.billContainer}>
-              <View style={styles.textSection}>
-            <Text style={[styles.connectionHeading, { color:'black' }]}>
-              {server.serverName}
-            </Text>
-            <Image
-        source={{ uri: server.imageBase64 || '' }}
-        style={styles.flag}
-        onError={(e) => console.log('Error loading image:', e.nativeEvent.error)}
-      />
-          </View>
-
-          <View style={styles.rightConnectionSubtitle}>
-            <Text style={[styles.connectionSubtitle, { color: getConnectionColor(server.id) }]} onPress={() => toggleServerConnection(server.id)}>
-            {selectedServerId === server.id ? 'Disconnect' : 'Connect'}
-            </Text>
-            <RadioButton
+            <TouchableOpacity
+            key={index}
+            style={[styles.billContainer]}
+            onPress={() => toggleServerConnection(server.id)}
+          >
+            <View style={styles.textSection}>
+              <Text style={styles.connectionHeading}>{server.serverName}</Text>
+              <Image
+                source={{ uri: server.imageBase64 || '' }}
+                style={styles.flag}
+                onError={(e) => console.log('Error loading image:', e.nativeEvent.error)}
+              />
+            </View>
+            <View style={styles.rightConnectionSubtitle}>
+              <Text style={[styles.connectionSubtitle, { color: getConnectionColor(server.id) }]}>
+                {getConnectionStatusText(server.id)}
+              </Text>
+              <RadioButton
                 value={server.id}
-                status={selectedServerId === server.id ? 'checked' : 'unchecked'}
+                status={selectedConnection === server.id ? 'checked' : 'unchecked'}
                 onPress={() => toggleServerConnection(server.id)}
                 color={getConnectionColor(server.id)}
-                uncheckedColor="green"
-                left={7}
+                uncheckedColor="red"
               />
-          </View>
-
-            </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
           ))}
         </ScrollView>
       </View>

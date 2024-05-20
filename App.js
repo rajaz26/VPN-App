@@ -8,10 +8,11 @@ import 'react-native-gesture-handler'
 
 export default function App() {
   return (
+    <Provider store={store}>
     <NavigationContainer >
       <Appnavigation />
     </NavigationContainer>
-
+    </Provider>
   );
 }
 

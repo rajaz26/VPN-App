@@ -10,9 +10,11 @@ import { Easing } from 'react-native-reanimated';
 import axios from 'axios';
 import { LOGIN } from '../assets/credentials';
 import { encode } from 'base64-arraybuffer';
-
+import RNFetchBlob from 'rn-fetch-blob';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import RNSimpleOpenvpn, { addVpnStateListener, removeVpnStateListener } from 'react-native-simple-openvpn';
-
+import SkeletonPlaceholder from "react-native-skeleton-placeholder";
+import { useDispatch, useSelector } from 'react-redux';
 
 const HomeScreen = () => {
 
@@ -20,12 +22,20 @@ const HomeScreen = () => {
   const [servers, setServers] = useState([]);
   const [selectedConnection, setSelectedConnection] = useState(null);
   const [timer, setTimer] = useState(0);
+  const [country, setCountry] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
   const navigation = useNavigation();
   const [loading, setLoading]=useState(false);
+  const [loadingServer, setLoadingServer]=useState(true);
   const [showAnimation, setShowAnimation] = useState(false);
   const [log, setLog] = useState('');
   const logScrollView = useRef(null);
+  const [vpnState, setVpnState] = useState(null);
+  const dispatch = useDispatch();
+  const vpnStatus = useSelector((state) => state.vpn);
+  const [ipAddress,setIpAddress]=useState(null);
+  const [isDisconnecting, setIsDisconnecting] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
   useEffect(() => {
     async function observeVpn() {
       addVpnStateListener((e) => {
@@ -40,54 +50,127 @@ const HomeScreen = () => {
     };
   }, []);
 
-  const toggleServerConnection = async (serverId) => {
-    if (selectedConnection !== serverId) {
-      setLoading(true);
+
+useEffect(() => {
+  if (isConnected) {
+      getPublicIP();
+  }
+}, [isConnected]);
+
+const getPublicIP = async () => {
+  try {
+      const response = await axios.get('https://api.ipify.org?format=json');
+      console.log("Your public IP address is: ", response.data.ip);
+      setIpAddress(response.data.ip);
+  } catch (error) {
+      console.error("Failed to fetch IP address: ", error);
+  }
+};
+
+
+const toggleServerConnection = async (serverId) => {
+  const server = servers.find(s => s.id === serverId);
+  if (!server) {
+      toggleConnect();
+      return;
+  }
+
+  if (selectedConnection !== serverId) {
+      setIsConnecting(true);
       setIsConnected(false);
       setSelectedConnection(serverId);
 
       try {
-        await startOvpn(serverId);
-        setIsConnected(true);
+          await startOvpn(serverId, server.fileName);
+          setIsConnected(true);
       } catch (error) {
-        console.error('VPN connection error:', error);
+          console.error('VPN connection error:', error);
       }
 
-      setLoading(false);
-    } else {
+      setIsConnecting(false);
+  } else {
+      setIsConnecting(false);
+      setIsDisconnecting(true);
       try {
-        await stopOvpn();
-        setIsConnected(false);
+          await stopOvpn();
+          setIsConnected(false);
+          setIsDisconnecting(false); 
       } catch (error) {
-        console.error('VPN disconnection error:', error);
+          console.error('VPN disconnection error:', error);
+          setIsDisconnecting(false); // Reset disconnection flag if error occurs
       }
       setSelectedConnection(null);
-    }
-  };
+      // setTimer(0);
+      setIpAddress(null);
+      setCountry(null);
+  }
+};
 
-  const startOvpn = async (serverId) => {
-    const ovpnFileName = 'US_1.ovpn' ;
-    const assetsPath =  '../assets';
 
-    
-    console.log("Here");
-    try {
-      await RNSimpleOpenvpn.connect({
-        remoteAddress: '',
-        ovpnFileName:'US_1' ,
-        assetsPath:'',
-        notificationTitle: 'RNSimpleOpenVPN',
-        compatMode: RNSimpleOpenvpn.CompatMode.OVPN_TWO_THREE_PEER,
-        providerBundleIdentifier: 'com.your.network.extension.bundle.id',
-        localizedDescription: 'TestRNSimpleOvpn',
-      });
-      console.log("Done");
-    } catch (error) {
-      updateLog(error.toString());
-      console.error("Error OVPN",error);
-      console.log("Error OVPN",error);
-    }
-  };
+const toggleConnect = async () => {
+  setIsConnecting(true);
+  if (!isConnected) {
+      
+      setTimeout(async () => {
+          try {
+              await connectToRandomServer();
+              setIsConnected(true);
+              setTimer(0);
+              
+          } catch (error) {
+              console.error('Connection failed:', error);
+              setIsConnected(false);
+          }
+          setIsConnecting(false);
+      }, 5000);
+  } else {
+      setIsConnecting(false);
+      setIsDisconnecting(true);
+      await stopOvpn();
+      setIsConnected(false);
+      setSelectedConnection(null);
+      // setTimer(0);
+      setIpAddress(null);
+      setCountry(null);
+      setIsDisconnecting(false);
+  }
+};
+
+const startOvpn = async (serverId, fileName) => {
+  const server = servers.find(s => s.id === serverId);
+  if (!server) {
+    console.error('Server not found');
+    return;
+  }
+
+  const fileUrl = `http://104.238.35.17:8090/api/ServersDetails/DownloadFile/${fileName}`;
+
+  try {
+    const response = await axios.get(fileUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+   const file=response.data;
+
+    const fileContentStr = file.toString('utf8'); 
+    await RNSimpleOpenvpn.connect({
+      remoteAddress: server.serverIP,
+      ovpnString:fileContentStr, 
+     
+      compatMode: RNSimpleOpenvpn.CompatMode.OVPN_TWO_THREE_PEER,
+      providerBundleIdentifier: 'com.your.network.extension.bundle.id',
+      localizedDescription: 'TestRNSimpleOvpn',
+    });
+    setCountry(server.countryName);
+    console.log(server.countryName);
+    console.log("Connection established with server:", server.serverName);
+  } catch (error) {
+    updateLog(error.toString());
+    console.error("Error connecting with OVPN or fetching file:", error);
+  }
+};
+
+
 
 
   const stopOvpn = async () => {
@@ -114,13 +197,7 @@ const HomeScreen = () => {
     }
     return () => clearInterval(interval);
   }, [isConnected, timer]);
-  const [mapRegion, setMapRegion] = useState({
-    latitude: 46.2276,
-    longitude: 2.2137,
-    latitudeDelta: 5,
-    longitudeDelta: 5,
-  });
-  
+
   const loginUser = async () => {
     try {
       const response = await axios.post('http://104.238.35.17:8090/login', {
@@ -129,7 +206,7 @@ const HomeScreen = () => {
       });
   
       if (response.status === 200) {
-        console.log("Login successful", response.data);
+
         setAccessToken(response.data.accessToken);
         await fetchServers(response.data.accessToken);
       } else {
@@ -143,33 +220,22 @@ const HomeScreen = () => {
 
 
   useEffect(() => {
-    if (loading && !isConnected) {
+    if (isConnecting && !isConnected) {
       setShowAnimation(true);
-    } else if (!loading && !isConnected) {
+    } else if (!isConnecting && !isConnected) {
       setTimeout(() => setShowAnimation(false), 1500);
     }
-  }, [loading, isConnected]);
+  }, [isConnecting, isConnected]);
   
-  const connections = [
-    {
-      id: 1,
-      country: 'Germany',
-      image: require('./germany.jpg'),
-    },
-    {
-      id: 2,
-      country: 'Japan',
-      image: require('./germany.jpg'), // You might want to change this to japan.jpg
-    },
-  ];
 
-
-  
   const getConnectionStatusText = (id) => {
     if (selectedConnection === id) {
-        if (loading) {
+        if (isConnecting) {
             return 'Connecting...';
-        } else if (isConnected) {
+        } else if (isDisconnecting) {
+          return 'Disconnecting'; 
+      }
+      else if (isConnected) {
             return 'Connected'; 
         } else {
             return 'Connect';
@@ -183,47 +249,8 @@ const HomeScreen = () => {
     return selectedConnection === id ? 'green' : 'red';
   };
 
-  useEffect(() => {
-    let interval = null;
-    if (isConnected) {
-      interval = setInterval(() => {
-        setTimer(oldTimer => oldTimer + 1);
-      }, 1000);
-    } else if (!isConnected && timer !== 0) {
-      clearInterval(interval);
-    }
-    return () => clearInterval(interval);
-  }, [isConnected, timer]);
 
-  const toggleConnect = async () => {
-      setLoading(true);
-      if (!isConnected) {
-          // Simulate connection delay
-          setTimeout(async () => {
-              try {
-                  await startOvpn(selectedConnection); // Make sure `selectedConnection` holds the correct server ID
-                  setIsConnected(true);
-                  setTimer(0);
-                  setMapRegion({
-                      latitude: 48.8566,
-                      longitude: 2.3522,
-                      latitudeDelta: 0.1,
-                      longitudeDelta: 0.1,
-                  });
-                  console.log("Navigated to France!");
-              } catch (error) {
-                  console.error('Connection failed:', error);
-                  setIsConnected(false);
-              }
-              setLoading(false);
-          }, 5000);
-      } else {
-          await stopOvpn();
-          setIsConnected(false);
-          setLoading(false);
-          setTimer(0);
-      }
-  };
+
 
   
   useEffect(()=>{
@@ -239,12 +266,14 @@ const HomeScreen = () => {
     return `${getHours}:${getMinutes}:${getSeconds}`;
   }
   const getConnectionButtonText = () => {
-    if (loading) {
-      return 'Connecting...';  // Show this text when the connection is in progress
-    } else if (isConnected) {
-      return 'Connected';  // Show when the connection is established
+    if (isConnecting) {
+      return 'Connecting...';
+    } else if (isDisconnecting) {
+      return 'Disconnecting'; 
+  }else if (isConnected) {
+      return 'Connected';  
     } else {
-      return 'Connect';  // Default text when there is no connection
+      return 'Connect';
     }
   };
   
@@ -266,33 +295,57 @@ const HomeScreen = () => {
   
   
   const fetchServers = async (token) => {
+    setLoadingServer(true);
     if (!token) {
-      console.log("Access token is not available.");
-      return;
+        console.log("Access token is not available.");
+        return;
     }
+    
     try {
-      const response = await axios.get('http://104.238.35.17:8090/api/ServersDetails', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (response.status === 200) {
-        const serversWithImages = await Promise.all(response.data.map(async server => {
-          const imageUrl = `http://104.238.35.17:8090${server.countryFlagLink}`;
-          const imageBase64 = await fetchImageDataAsBase64(imageUrl, token);
-          return { ...server, imageBase64 };
-        }));
-        setServers(serversWithImages);
-      } else {
-        console.error("Failed to fetch server details", response.data);
-      }
+        const response = await axios.get('http://104.238.35.17:8090/api/ServersDetails', {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        if (response.status === 200) {
+            const serversWithImagesAndFiles = await Promise.all(response.data.map(async server => {
+                const imageUrl = `http://104.238.35.17:8090${server.countryFlagLink}`;
+                const imageBase64 = await fetchImageDataAsBase64(imageUrl, token);
+                const fileName = server.ovpnFileLink.split('/').pop();
+                return { ...server, imageBase64, fileName };
+            }));
+            setServers(serversWithImagesAndFiles);
+            setLoadingServer(false);
+        } else {
+            console.error("Failed to fetch server details", response.data);
+        }
     } catch (error) {
-      console.error("Error fetching server details:", error);
+        console.error("Error fetching server details:", error);
     }
+};
+
+const connectToRandomServer = async () => {
+  if (servers.length === 0) {
+      console.error('No servers available to connect.');
+      return;
   }
-  
+
+  const randomIndex = Math.floor(Math.random() * servers.length);
+  const server = servers[randomIndex];
+
+  console.log("Automatically connecting to server:", server.serverName);
+  await toggleServerConnection(server.id);
+};
+
+
+
+
   
   useEffect(() => {
     loginUser();
   }, []);
+  
+
+  
+
   
 
   return (
@@ -319,43 +372,43 @@ const HomeScreen = () => {
           </View>
 
           <ScrollView style={styles.sliderContainer} horizontal={true} showsHorizontalScrollIndicator={false}>
-          {servers.map((server, index) => (
-  <TouchableOpacity
-    key={index}
-    style={[
-      styles.connectionSection,
-      { backgroundColor:'white' }
-    ]}
-    onPress={() => toggleServerConnection(server.id)}
-  >
-    <View style={styles.textSection}>
-      <Text style={styles.connectionHeading}>{server.serverName}</Text>
-      <Image
-        source={{ uri: server.imageBase64 || '' }}
-        style={styles.flag}
-        onError={(e) => console.log('Error loading image:', e.nativeEvent.error)}
-      />
-    </View>
-    <View style={styles.rightConnectionSubtitle}>
-      <Text
-        style={[styles.connectionSubtitle, { color: getConnectionColor(server.id) }]}
-      >
-        {getConnectionStatusText(server.id)}
-      </Text>
-      <RadioButton
-        value={server.id}
-        status={selectedConnection === server.id ? 'checked' : 'unchecked'}
-        onPress={() => toggleServerConnection(server.id)}
-        color={getConnectionColor(server.id)}
-        uncheckedColor="red"
-      />
-    </View>
-  </TouchableOpacity>
-))}
-
-</ScrollView>
-
-
+            {loadingServer ? (
+              Array.from({ length: 3 }).map((_, index) => (
+                <SkeletonPlaceholder key={index}>
+                  <SkeletonPlaceholder.Item width={300} height={100} borderRadius={10} marginRight={20} />
+                </SkeletonPlaceholder>
+              ))
+            ) : (
+              servers.map((server, index) => (
+                <View
+                  key={index}
+                  style={[styles.connectionSection, { backgroundColor: 'white' }]}
+                  onPress={() => toggleServerConnection(server.id)}
+                >
+                  <View style={styles.textSection}>
+                    <Text style={styles.connectionHeading}>{server.serverName}</Text>
+                    <Image
+                      source={{ uri: server.imageBase64 || '' }}
+                      style={styles.flag}
+                      onError={(e) => console.log('Error loading image:', e.nativeEvent.error)}
+                    />
+                  </View>
+                  <View style={styles.rightConnectionSubtitle}>
+                    <Text style={[styles.connectionSubtitle, { color: getConnectionColor(server.id) }]}>
+                      {getConnectionStatusText(server.id)}
+                    </Text>
+                    <RadioButton
+                      value={server.id}
+                      status={selectedConnection === server.id ? 'checked' : 'unchecked'}
+                      onPress={() => toggleServerConnection(server.id)}
+                      color={getConnectionColor(server.id)}
+                      uncheckedColor="red"
+                    />
+                  </View>
+                </View>
+              ))
+            )}
+          </ScrollView>
         </View>
 
 
@@ -386,7 +439,7 @@ const HomeScreen = () => {
 
 <TouchableOpacity 
   style={[styles.connectButton]}
-  onPress={toggleConnect} 
+  onPress={toggleServerConnection} 
 >
   <Text style={styles.connectStartText}>
     {getConnectionButtonText()}
@@ -408,21 +461,21 @@ const HomeScreen = () => {
           <TouchableOpacity style={styles.bottomButton} onPress={() => navigation.navigate('ListServers')}>
             <View style={styles.buttonContainer}>
             {/* <Ionic size={22} color='#292B3A' name ='location'/> */}
-            <Text style={styles.bottomText}>Duration :</Text>
+            <Text style={styles.bottomText}>Duration :{formatTime(timer)}</Text>
             </View>
             <View style={styles.buttonContainer}>
      
-            <Text style={styles.bottomText}>Local IP :</Text>
+            <Text style={styles.bottomText}>IP :{ipAddress}</Text>
             </View>
             </TouchableOpacity>
             <TouchableOpacity style={styles.bottomButton} onPress={() => navigation.navigate('ListServers')}>
             <View style={styles.buttonContainer}>
         
-            <Text style={styles.bottomText}>In :</Text>
+            <Text style={styles.bottomText}>Country: {country}</Text>
             </View>
             <View style={styles.buttonContainer}>
           
-            <Text style={styles.bottomText}>Out :</Text>
+            <Text style={styles.bottomText}>In/Out :</Text>
             </View>
             </TouchableOpacity>
          
